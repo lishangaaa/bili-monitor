@@ -1,14 +1,18 @@
 import os
 import re
+import json
 import requests
 
 # ================= 配置区域 =================
 UID = "356171176"          # 目标 UP 主 UID
 TARGET_KEYWORD = "洛天依"    # 监控关键词
-MAX_HISTORY_COUNT = 20     # 最多保留的历史 BVID 数量（自动清理旧数据）
+MAX_HISTORY_COUNT = 20     # 最多保留历史记录数量
 # ===========================================
 
-PUSH_TOKEN = os.environ.get("PUSH_TOKEN")
+APP_ID = os.environ.get("FEISHU_APP_ID")
+APP_SECRET = os.environ.get("FEISHU_APP_SECRET")
+RECEIVE_ID = os.environ.get("FEISHU_RECEIVE_ID")
+RECEIVE_ID_TYPE = os.environ.get("FEISHU_RECEIVE_ID_TYPE", "chat_id")
 RECORD_FILE = "last_bvid.txt"
 
 HEADERS = {
@@ -17,6 +21,88 @@ HEADERS = {
     "Origin": "https://space.bilibili.com",
     "Accept": "application/json, text/plain, */*"
 }
+
+def get_tenant_access_token():
+    """获取飞书应用访问凭证"""
+    url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
+    req_body = {"app_id": APP_ID, "app_secret": APP_SECRET}
+    try:
+        resp = requests.post(url, json=req_body, timeout=10).json()
+        if resp.get("code") == 0:
+            return resp.get("tenant_access_token")
+        print(f"获取飞书 Token 失败: {resp}")
+    except Exception as e:
+        print(f"请求飞书 Token 异常: {e}")
+    return None
+
+def send_feishu_card(title, author, reason, tags_str, desc, video_url, pic_url):
+    """发送包含标题、封面图、Tag的飞书卡片消息"""
+    token = get_tenant_access_token()
+    if not token or not RECEIVE_ID:
+        print("缺少飞书 Token 或 RECEIVE_ID 配置")
+        return
+
+    # 规范化封面图链接（补全 https:）
+    if pic_url.startswith("//"):
+        pic_url = f"https:{pic_url}"
+
+    url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={RECEIVE_ID_TYPE}"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json; charset=utf-8"
+    }
+
+    card_content = {
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {
+                "tag": "plain_text",
+                "content": f"🎬【洛天依提醒】{author} 发布了新视频！"
+            },
+            "template": "blue"
+        },
+        "elements": [
+            {
+                "tag": "div",
+                "text": {
+                    "tag": "lark_md",
+                    "content": (
+                        f"**📺 视频标题：** [{title}]({video_url})\n"
+                        f"**🎯 命中原因：** {reason}\n"
+                        f"**🏷️ 视频标签：** {tags_str}\n"
+                        f"**📝 视频简介：** {desc[:120]}...\n\n"
+                        f"![封面]({pic_url})"
+                    )
+                }
+            },
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {
+                            "tag": "plain_text",
+                            "content": "👉 点击在 B 站中播放"
+                        },
+                        "type": "primary",
+                        "url": video_url
+                    }
+                ]
+            }
+        ]
+    }
+
+    payload = {
+        "receive_id": RECEIVE_ID,
+        "msg_type": "interactive",
+        "content": json.dumps(card_content)
+    }
+
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=15).json()
+        print(f"飞书消息推送响应: {res}")
+    except Exception as e:
+        print(f"飞书推送异常: {e}")
 
 def get_latest_videos(mid):
     """获取 UP 主最新 5 条投稿"""
@@ -49,32 +135,13 @@ def match_rules(title, tags):
             return True, f"标签命中【{tag}】"
     return False, "未命中"
 
-def send_pushplus(title, content):
-    """发送微信推送"""
-    if not PUSH_TOKEN:
-        print("未检测到 PUSH_TOKEN")
-        return
-    url = "https://www.pushplus.plus/send"
-    data = {
-        "token": PUSH_TOKEN,
-        "title": title,
-        "content": content,
-        "template": "html"
-    }
-    try:
-        requests.post(url, json=data, timeout=15)
-    except Exception as e:
-        print(f"推送异常: {e}")
-
 def load_history():
-    """读取历史 BVID 列表"""
     if os.path.exists(RECORD_FILE):
         with open(RECORD_FILE, "r", encoding="utf-8") as f:
             return [line.strip() for line in f if line.strip()]
     return []
 
 def save_history(history_list):
-    """保存并自动清理超出数量的旧 BVID"""
     cleaned_list = history_list[:MAX_HISTORY_COUNT]
     with open(RECORD_FILE, "w", encoding="utf-8") as f:
         f.write("\n".join(cleaned_list))
@@ -86,23 +153,22 @@ def main():
         print("未能获取到投稿列表，退出")
         return
 
-    # 首次运行：将当前最新的 5 个视频全部写入记录，防止首次运行产生历史轰炸
+    # 首次运行初始化历史基准
     if not history_bvids:
         initial_bvids = [v["bvid"] for v in vlist]
         save_history(initial_bvids)
-        print(f"首次初始化完成，已记录最近 {len(initial_bvids)} 个视频作为基础数据。")
+        print(f"首次初始化完成，已记录最近 {len(initial_bvids)} 个视频作为基准。")
         return
 
     new_found = False
-    # 倒序遍历（先处理较早发布的，后处理最新的）
     for video in reversed(vlist):
         bvid = video["bvid"]
         if bvid not in history_bvids:
             new_found = True
             title = video["title"]
-            desc = video["description"]
-            pic = video["pic"]
+            desc = video["description"] or "暂无简介"
             author = video["author"]
+            pic = video["pic"]
             video_url = f"https://www.bilibili.com/video/{bvid}"
 
             tags = get_video_tags(bvid)
@@ -111,22 +177,11 @@ def main():
 
             is_matched, reason = match_rules(title, tags)
             if is_matched:
-                msg_title = f"【洛天依提醒】{author} 发布了新视频！"
-                msg_html = f"""
-                <h3><a href="{video_url}">{title}</a></h3>
-                <p><b>UP主：</b>{author}</p>
-                <p><b>命中原因：</b>{reason}</p>
-                <p><b>标签：</b>{tag_display}</p>
-                <p><b>简介：</b>{desc}</p>
-                <img src="{pic}" style="max-width:100%; border-radius:8px;" />
-                <p><a href="{video_url}">👉 点击直达 B 站观看</a></p>
-                """
-                send_pushplus(msg_title, msg_html)
-                print(f"推送成功: {reason}")
+                send_feishu_card(title, author, reason, tag_display, desc, video_url, pic)
+                print(f"已推送飞书: {reason}")
             else:
                 print(f"跳过推送: {reason}")
 
-            # 插入到记录列表最前
             history_bvids.insert(0, bvid)
 
     if new_found:
