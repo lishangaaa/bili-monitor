@@ -15,34 +15,31 @@ RECEIVE_ID = os.environ.get("FEISHU_RECEIVE_ID")
 RECEIVE_ID_TYPE = os.environ.get("FEISHU_RECEIVE_ID_TYPE", "chat_id")
 RECORD_FILE = "last_bvid.txt"
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Referer": f"https://space.bilibili.com/{UID}/video",
-    "Origin": "https://space.bilibili.com",
+COMMON_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Referer": "https://www.bilibili.com/",
     "Accept": "application/json, text/plain, */*"
 }
 
 def get_tenant_access_token():
-    """获取飞书应用访问凭证"""
+    """获取飞书应用凭证"""
     url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
-    req_body = {"app_id": APP_ID, "app_secret": APP_SECRET}
     try:
-        resp = requests.post(url, json=req_body, timeout=10).json()
+        resp = requests.post(url, json={"app_id": APP_ID, "app_secret": APP_SECRET}, timeout=10).json()
         if resp.get("code") == 0:
             return resp.get("tenant_access_token")
-        print(f"获取飞书 Token 失败: {resp}")
+        print(f"飞书 Token 获取失败: {resp}")
     except Exception as e:
-        print(f"请求飞书 Token 异常: {e}")
+        print(f"飞书 Token 请求异常: {e}")
     return None
 
 def send_feishu_card(title, author, reason, tags_str, desc, video_url, pic_url):
-    """发送包含标题、封面图、Tag的飞书卡片消息"""
+    """发送飞书富文本卡片"""
     token = get_tenant_access_token()
     if not token or not RECEIVE_ID:
         print("缺少飞书 Token 或 RECEIVE_ID 配置")
         return
 
-    # 规范化封面图链接（补全 https:）
     if pic_url.startswith("//"):
         pic_url = f"https:{pic_url}"
 
@@ -82,7 +79,7 @@ def send_feishu_card(title, author, reason, tags_str, desc, video_url, pic_url):
                         "tag": "button",
                         "text": {
                             "tag": "plain_text",
-                            "content": "👉 点击在 B 站中播放"
+                            "content": "👉 点击直达 B 站播放"
                         },
                         "type": "primary",
                         "url": video_url
@@ -105,11 +102,107 @@ def send_feishu_card(title, author, reason, tags_str, desc, video_url, pic_url):
         print(f"飞书推送异常: {e}")
 
 def get_latest_videos(mid):
-    """获取 UP 主最新 5 条投稿"""
-    url = f"https://api.bilibili.com/x/space/arc/search?mid={mid}&ps=5&pn=1"
+    """采用免 WBI 校验的 Medialist 底层接口"""
+    url = f"https://api.bilibili.com/x/v2/medialist/resource/list?type=1&biz_id={mid}&ps=5"
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15).json()
-        if resp.get("code") == 0 and "data" in resp and "list" in resp["data"]:
+        resp = requests.get(url, headers=COMMON_HEADERS, timeout=15).json()
+        if resp.get("code") == 0 and "data" in resp and "media_list" in resp["data"]:
+            media_list = resp["data"]["media_list"]
+            if media_list:
+                result = []
+                for item in media_list:
+                    result.append({
+                        "bvid": item.get("bv_id") or item.get("bvid"),
+                        "title": item.get("title", ""),
+                        "description": item.get("intro", ""),
+                        "pic": item.get("cover", ""),
+                        "author": item.get("upper", {}).get("name", "UP主")
+                    })
+                print(f"成功获取到 {len(result)} 条最新视频！")
+                return result
+        print(f"接口返回异常: {resp}")
+    except Exception as e:
+        print(f"获取视频列表网络异常: {e}")
+    return []
+
+def get_video_tags(bvid):
+    """获取视频标签"""
+    url = f"https://api.bilibili.com/x/tag/archive/tags?bvid={bvid}"
+    try:
+        resp = requests.get(url, headers=COMMON_HEADERS, timeout=10).json()
+        if resp.get("code") == 0 and resp.get("data"):
+            return [item["tag_name"] for item in resp["data"]]
+    except Exception as e:
+        print(f"获取标签异常: {e}")
+    return []
+
+def match_rules(title, tags):
+    """判断是否命中关键词"""
+    if re.search(TARGET_KEYWORD, title, re.IGNORECASE):
+        return True, f"标题命中【{TARGET_KEYWORD}】"
+    for tag in tags:
+        if re.search(TARGET_KEYWORD, tag, re.IGNORECASE):
+            return True, f"标签命中【{tag}】"
+    return False, "未命中"
+
+def load_history():
+    if os.path.exists(RECORD_FILE):
+        with open(RECORD_FILE, "r", encoding="utf-8") as f:
+            return [line.strip() for line in f if line.strip()]
+    return []
+
+def save_history(history_list):
+    cleaned_list = history_list[:MAX_HISTORY_COUNT]
+    with open(RECORD_FILE, "w", encoding="utf-8") as f:
+        f.write("\n".join(cleaned_list))
+
+def main():
+    history_bvids = load_history()
+    vlist = get_latest_videos(UID)
+    if not vlist:
+        print("未获取到视频列表，退出")
+        return
+
+    # 首次运行：记录当前视频并生成 last_bvid.txt
+    if not history_bvids:
+        initial_bvids = [v["bvid"] for v in vlist if v.get("bvid")]
+        save_history(initial_bvids)
+        print(f"首次初始化成功！已生成 last_bvid.txt，记录了 {len(initial_bvids)} 个基准视频: {initial_bvids}")
+        return
+
+    new_found = False
+    for video in reversed(vlist):
+        bvid = video.get("bvid")
+        if not bvid:
+            continue
+        if bvid not in history_bvids:
+            new_found = True
+            title = video["title"]
+            desc = video.get("description", "") or "暂无简介"
+            author = video.get("author", "目标UP主")
+            pic = video.get("pic", "")
+            video_url = f"https://www.bilibili.com/video/{bvid}"
+
+            tags = get_video_tags(bvid)
+            tag_display = "、".join(tags) if tags else "无标签"
+            print(f"发现新投稿: {title} ({bvid})")
+
+            is_matched, reason = match_rules(title, tags)
+            if is_matched:
+                send_feishu_card(title, author, reason, tag_display, desc, video_url, pic)
+                print(f"已推送飞书: {reason}")
+            else:
+                print(f"跳过推送: {reason}")
+
+            history_bvids.insert(0, bvid)
+
+    if new_found:
+        save_history(history_bvids)
+    else:
+        print("无新视频投稿")
+
+if __name__ == "__main__":
+    main()        if resp.get("code") == 0 and "data" in resp and "list" in resp["data"]:
             return resp["data"]["list"]["vlist"]
     except Exception as e:
         print(f"获取投稿列表异常: {e}")
