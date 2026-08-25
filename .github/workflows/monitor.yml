@@ -5,7 +5,7 @@ on:
     - cron: '*/5 * * * *'
   workflow_dispatch:
 
-# 限制同一时间只能运行一个监控实例，避免状态写入冲突
+# 限制同一时间只能运行一个监控实例，避免状态写入与提交冲突
 concurrency:
   group: bilibili-monitor
   cancel-in-progress: false
@@ -29,6 +29,7 @@ jobs:
 
       - name: Run Monitor Script
         env:
+          TZ: Asia/Shanghai  # 统一容器与 Python 运行时为北京时间 (UTC+8)
           FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
           FEISHU_RECEIVE_ID: ${{ secrets.FEISHU_RECEIVE_ID }}
@@ -36,15 +37,6 @@ jobs:
           # 如需在 Github 环境变量中动态修改监控目标，可取消下方注释：
           # TARGET_UID: ${{ vars.TARGET_UID }}
           # TARGET_KEYWORD: ${{ vars.TARGET_KEYWORD }}
-        run: python main.py
-
-- name: Run Monitor Script
-        env:
-          TZ: Asia/Shanghai  # 将系统与 Python 运行时时区设为北京时间
-          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
-          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
-          FEISHU_RECEIVE_ID: ${{ secrets.FEISHU_RECEIVE_ID }}
-          FEISHU_RECEIVE_ID_TYPE: ${{ secrets.FEISHU_RECEIVE_ID_TYPE }}
         run: python main.py
 
       - name: Commit State
