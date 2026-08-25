@@ -1,0 +1,37 @@
+name: Bilibili Monitor
+
+on:
+  schedule:
+    # 每 15 分钟自动执行一次（UTC 时间）
+    - cron: '*/15 * * * *'
+  workflow_dispatch: # 支持手动点按钮测试
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: pip install requests
+
+      - name: Run Monitor Script
+        env:
+          PUSH_TOKEN: ${{ secrets.PUSH_TOKEN }}
+        run: python main.py
+
+      - name: Commit State
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add last_bvid.txt
+          git diff --quiet && git diff --staged --quiet || git commit -m "Update state [skip ci]"
+          git push
