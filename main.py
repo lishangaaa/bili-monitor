@@ -157,6 +157,19 @@ def save_history(history_list):
         f.write("\n".join(cleaned_list))
 
 def main():
+    # =============== 测试推送区 ===============
+    print("正在发送飞书连通性测试卡片...")
+    send_feishu_card(
+        title="【测试推送】B站洛天依监控已就绪",
+        author="系统监控",
+        reason="手动触发连通性测试",
+        tags_str="洛天依、监控机器人、自动推送",
+        desc="飞书机器人通信正常！后续当目标 UP 主发布包含【洛天依】的新视频时，将自动在此推送卡片。",
+        video_url="https://www.bilibili.com",
+        pic_url="https://i0.hdslb.com/bfs/archive/2237bb96a0b1297e59f42b322a36b56dc66324b1.jpg"
+    )
+    # =========================================
+
     history_bvids = load_history()
     vlist = get_latest_videos(UID)
     if not vlist:
