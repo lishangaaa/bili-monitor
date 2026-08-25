@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Bilibili to Feishu Bot Notification Service
-Enterprise-grade content monitoring, rich card builder, and instant dispatching agent.
+Enterprise-grade content monitoring and high-aesthetic card builder.
 """
 
 from __future__ import annotations
@@ -38,27 +38,22 @@ logger = logging.getLogger("BiliFeishuMonitor")
 @dataclass(frozen=True)
 class ServiceConfig:
     """Service runtime configuration loaded from environment variables."""
-    # Feishu App Credentials
     feishu_app_id: str = field(default_factory=lambda: os.getenv("FEISHU_APP_ID", ""))
     feishu_app_secret: str = field(default_factory=lambda: os.getenv("FEISHU_APP_SECRET", ""))
     feishu_receive_id: str = field(default_factory=lambda: os.getenv("FEISHU_RECEIVE_ID", ""))
     feishu_receive_id_type: str = field(default_factory=lambda: os.getenv("FEISHU_RECEIVE_ID_TYPE", "chat_id"))
 
-    # Bilibili Target & Rule
     target_uid: str = field(default_factory=lambda: os.getenv("TARGET_UID", "356171176"))
     target_keyword: str = field(default_factory=lambda: os.getenv("TARGET_KEYWORD", "洛天依"))
 
-    # Storage & Persistence
     max_history_count: int = field(default_factory=lambda: int(os.getenv("MAX_HISTORY_COUNT", "20")))
     record_file_path: Path = field(default_factory=lambda: Path(os.getenv("RECORD_FILE", "last_bvid.txt")))
 
-    # Network Policies
     request_timeout: int = 15
     max_retries: int = 3
     backoff_factor: float = 0.5
 
     def validate(self) -> None:
-        """Validate core secrets and config integrity."""
         missing = []
         if not self.feishu_app_id:
             missing.append("FEISHU_APP_ID")
@@ -75,7 +70,7 @@ class ServiceConfig:
 # ==============================================================================
 @dataclass
 class VideoEntity:
-    """Represents a Bilibili Video entity with rich metadata."""
+    """Represents a Bilibili Video entity."""
     bvid: str
     title: str
     description: str
@@ -90,22 +85,24 @@ class VideoEntity:
     @property
     def formatted_tags(self) -> str:
         if not self.tags:
-            return "无标签"
-        return " ".join([f"`#{tag}`" for tag in self.tags[:5]])
+            return "无相关标签"
+        return "  ".join([f"`#{tag}`" for tag in self.tags[:6]])
 
     @property
     def description_preview(self) -> str:
-        clean_desc = self.description.strip().replace("\n", " ")
-        if not clean_desc:
-            return "该视频暂未填写简介。"
-        return f"{clean_desc[:110]}..." if len(clean_desc) > 110 else clean_desc
+        clean = self.description.strip().replace("\r\n", "\n")
+        if not clean:
+            return "*作者未填写简介*"
+        lines = clean.splitlines()
+        preview = " ".join([line.strip() for line in lines if line.strip()])
+        return f"{preview[:140]}..." if len(preview) > 140 else preview
 
 
 # ==============================================================================
 # HTTP Client Wrapper with Connection Pool & Retry
 # ==============================================================================
 class HttpClient:
-    """Thread-safe HTTP client with connection pooling, exponential backoff, and standard headers."""
+    """Thread-safe HTTP client with connection pooling and retry mechanism."""
 
     def __init__(self, timeout: int = 15, max_retries: int = 3, backoff: float = 0.5) -> None:
         self._timeout = timeout
@@ -129,10 +126,10 @@ class HttpClient:
 
 
 # ==============================================================================
-# Feishu API Client & Card Builder
+# Feishu API Client & Modern Card Builder
 # ==============================================================================
 class FeishuClient:
-    """Client for Feishu Open Platform APIs and aesthetic Interactive Card constructor."""
+    """Client for Feishu Open Platform with modern visual card templates."""
 
     AUTH_URL = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
     UPLOAD_IMAGE_URL = "https://open.feishu.cn/open-apis/im/v1/images"
@@ -145,7 +142,6 @@ class FeishuClient:
         self._token_expires_at: float = 0.0
 
     def get_access_token(self) -> Optional[str]:
-        """Fetch or return cached tenant access token."""
         if self._token and time.time() < (self._token_expires_at - 60):
             return self._token
 
@@ -159,15 +155,13 @@ class FeishuClient:
                 self._token = resp.get("tenant_access_token")
                 expire_in = resp.get("expire", 7200)
                 self._token_expires_at = time.time() + expire_in
-                logger.info("Successfully refreshed Feishu tenant access token.")
                 return self._token
-            logger.error(f"Feishu authentication failed: {resp}")
+            logger.error(f"Feishu token retrieval failed: {resp}")
         except requests.RequestException as exc:
-            logger.error(f"Feishu authentication network exception: {exc}")
+            logger.error(f"Feishu network exception: {exc}")
         return None
 
     def upload_image(self, image_url: str, referer_headers: Dict[str, str]) -> Optional[str]:
-        """Download remote image and upload to Feishu IM assets."""
         token = self.get_access_token()
         if not token or not image_url:
             return None
@@ -187,98 +181,63 @@ class FeishuClient:
 
             upload_resp = self.http.post(self.UPLOAD_IMAGE_URL, headers=headers, data=data, files=files).json()
             if upload_resp.get("code") == 0 and "data" in upload_resp:
-                image_key = upload_resp["data"]["image_key"]
-                logger.info(f"Image uploaded to Feishu asset store: {image_key}")
-                return image_key
+                return upload_resp["data"]["image_key"]
             logger.error(f"Feishu image upload failed: {upload_resp}")
         except Exception as exc:
-            logger.error(f"Image processing pipeline exception: {exc}")
+            logger.error(f"Image pipeline exception: {exc}")
         return None
 
-    def _build_rich_card(self, video: VideoEntity, match_reason: str, image_key: Optional[str]) -> Dict[str, Any]:
-        """Construct a high-polish, structured Feishu Interactive Card."""
-        now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    def _build_modern_card(self, video: VideoEntity, match_reason: str, image_key: Optional[str]) -> Dict[str, Any]:
+        """Builds a streamlined, magazine-style modern card."""
+        now_time = datetime.datetime.now().strftime("%H:%M")
+        elements: List[Dict[str, Any]] = []
 
-        # 1. 顶部标题与匹配原因微件
-        elements: List[Dict[str, Any]] = [
-            {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": (
-                        f"### 📺 [{video.title}]({video.url})\n"
-                        f"**🎯 命中状态：** <font color='green'>**{match_reason}**</font>"
-                    )
-                }
-            }
-        ]
-
-        # 2. 多列结构化元数据卡片 (Column Set)
-        elements.append({
-            "tag": "column_set",
-            "flex_mode": "none",
-            "background_style": "grey",
-            "columns": [
-                {
-                    "tag": "column",
-                    "width": "weighted",
-                    "weight": 1,
-                    "elements": [
-                        {
-                            "tag": "div",
-                            "text": {
-                                "tag": "lark_md",
-                                "content": (
-                                    f"**👤 投稿作者**\n{video.author}\n\n"
-                                    f"**🆔 稿件 BV 号**\n`{video.bvid}`"
-                                )
-                            }
-                        }
-                    ]
-                },
-                {
-                    "tag": "column",
-                    "width": "weighted",
-                    "weight": 1,
-                    "elements": [
-                        {
-                            "tag": "div",
-                            "text": {
-                                "tag": "lark_md",
-                                "content": (
-                                    f"**🏷️ 稿件标签**\n{video.formatted_tags}\n\n"
-                                    f"**⏰ 监控发现时间**\n`{now_str}`"
-                                )
-                            }
-                        }
-                    ]
-                }
-            ]
-        })
-
-        # 3. 原生封面图 (大图自适应展示，支持点击全屏查看)
+        # 1. 顶置大图封面 (Hero Image)
         if image_key:
             elements.append({
                 "tag": "img",
                 "img_key": image_key,
-                "alt": {"tag": "plain_text", "content": f"{video.title} 封面"},
+                "alt": {"tag": "plain_text", "content": video.title},
                 "mode": "fit_horizontal",
                 "preview": True
             })
 
-        # 4. 视频简介引用块
+        # 2. 核心主标题与命中状态条
         elements.append({
             "tag": "div",
             "text": {
                 "tag": "lark_md",
-                "content": f"**📝 视频简介摘要**\n> {video.description_preview}"
+                "content": (
+                    f"## [{video.title}]({video.url})\n"
+                    f"<font color='green'>●</font> **规则命中：** <font color='carmine'>**{match_reason}**</font>"
+                )
             }
         })
 
-        # 5. 分割线
+        # 3. 规整信息区 (采用轻量级两行排版，兼顾电脑端与移动端)
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    f"**UP主：** {video.author}  ｜  **BV号：** `{video.bvid}`\n"
+                    f"**标签：** {video.formatted_tags}"
+                )
+            }
+        })
+
+        # 4. 引用式优雅简介
+        elements.append({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": f"> {video.description_preview}"
+            }
+        })
+
         elements.append({"tag": "hr"})
 
-        # 6. 双行动号召按钮组 (Primary 观看 + Default 空间)
+        # 5. 极简按钮栏
         elements.append({
             "tag": "action",
             "actions": [
@@ -286,7 +245,7 @@ class FeishuClient:
                     "tag": "button",
                     "text": {
                         "tag": "plain_text",
-                        "content": "▶️ 立即在 B 站观看"
+                        "content": "立即前往 B 站观看 →"
                     },
                     "type": "primary",
                     "url": video.url
@@ -295,7 +254,7 @@ class FeishuClient:
                     "tag": "button",
                     "text": {
                         "tag": "plain_text",
-                        "content": "👤 访问 UP 主空间"
+                        "content": "UP主主页"
                     },
                     "type": "default",
                     "url": f"https://space.bilibili.com/{self.cfg.target_uid}"
@@ -303,13 +262,13 @@ class FeishuClient:
             ]
         })
 
-        # 7. 底部运维注脚
+        # 6. 轻量注脚
         elements.append({
             "tag": "note",
             "elements": [
                 {
                     "tag": "plain_text",
-                    "content": f"🤖 哔哩哔哩动态监控服务 • 监控目标 UID: {self.cfg.target_uid} • 关键词: {self.cfg.target_keyword}"
+                    "content": f"Bilibili 动态监测 • 捕获时间 {now_time} • UID: {self.cfg.target_uid}"
                 }
             ]
         })
@@ -322,22 +281,21 @@ class FeishuClient:
             "header": {
                 "title": {
                     "tag": "plain_text",
-                    "content": f"🎬 {video.author} 发布了新动态！"
+                    "content": f"✨ {video.author} 投稿了新视频"
                 },
                 "subtitle": {
                     "tag": "plain_text",
-                    "content": f"Bilibili 动态监测 · 匹配到【{self.cfg.target_keyword}】"
+                    "content": f"命中监控词「{self.cfg.target_keyword}」"
                 },
-                "template": "indigo"  # 典雅靛蓝色主题
+                "template": "carmine"  # Bilibili 标志性绯红/粉系风格
             },
             "elements": elements
         }
 
     def send_interactive_card(self, video: VideoEntity, match_reason: str, image_key: Optional[str]) -> bool:
-        """Push rich interactive card message."""
         token = self.get_access_token()
         if not token:
-            logger.error("Abort notification dispatch: Missing valid Feishu token.")
+            logger.error("Abort send: Missing valid Feishu token.")
             return False
 
         headers = {
@@ -345,8 +303,8 @@ class FeishuClient:
             "Content-Type": "application/json; charset=utf-8"
         }
         params = {"receive_id_type": self.cfg.feishu_receive_id_type}
+        card_data = self._build_modern_card(video, match_reason, image_key)
 
-        card_data = self._build_rich_card(video, match_reason, image_key)
         payload = {
             "receive_id": self.cfg.feishu_receive_id,
             "msg_type": "interactive",
@@ -356,7 +314,7 @@ class FeishuClient:
         try:
             resp = self.http.post(self.SEND_MESSAGE_URL, params=params, headers=headers, json=payload).json()
             if resp.get("code") == 0:
-                logger.info(f"Feishu rich card dispatched successfully for BVID: {video.bvid}")
+                logger.info(f"Feishu modern card dispatched successfully for BVID: {video.bvid}")
                 return True
             logger.error(f"Feishu dispatch returned error: {resp}")
         except requests.RequestException as exc:
@@ -380,7 +338,6 @@ class BilibiliService:
         self.http = http_client
 
     def fetch_latest_videos(self, mid: str, page_size: int = 5) -> List[VideoEntity]:
-        """Fetch latest published videos by UP ID."""
         url = f"https://api.bilibili.com/x/v2/medialist/resource/list?type=1&biz_id={mid}&ps={page_size}"
         try:
             resp = self.http.get(url, headers=self.COMMON_HEADERS).json()
@@ -402,7 +359,6 @@ class BilibiliService:
         return []
 
     def fetch_video_tags(self, bvid: str) -> List[str]:
-        """Fetch tags associated with the given BV ID."""
         url = f"https://api.bilibili.com/x/tag/archive/tags?bvid={bvid}"
         try:
             resp = self.http.get(url, headers=self.COMMON_HEADERS).json()
@@ -460,18 +416,16 @@ class VideoMonitorEngine:
         self.history_store = HistoryStore(self.cfg.record_file_path, self.cfg.max_history_count)
 
     def match_rules(self, video: VideoEntity) -> Tuple[bool, str]:
-        """Check if video title or tags hit monitoring keywords."""
         if re.search(self.cfg.target_keyword, video.title, re.IGNORECASE):
-            return True, f"标题命中【{self.cfg.target_keyword}】"
+            return True, f"标题包含「{self.cfg.target_keyword}」"
 
         for tag in video.tags:
             if re.search(self.cfg.target_keyword, tag, re.IGNORECASE):
-                return True, f"标签命中【{tag}】"
+                return True, f"标签包含「{tag}」"
 
         return False, "未命中任何规则"
 
     def process_video(self, video: VideoEntity) -> None:
-        """Fetch tags, evaluate rules and push notification if matched."""
         video.tags = self.bili_service.fetch_video_tags(video.bvid)
         is_matched, reason = self.match_rules(video)
 
@@ -479,12 +433,11 @@ class VideoMonitorEngine:
             logger.info(f"Skipping BV [{video.bvid}]: {reason}")
             return
 
-        logger.info(f"Target matched [{video.bvid}]: {reason}. Uploading cover image...")
+        logger.info(f"Target matched [{video.bvid}]: {reason}. Processing cover...")
         image_key = self.feishu_client.upload_image(video.cover_url, self.bili_service.COMMON_HEADERS)
         self.feishu_client.send_interactive_card(video, reason, image_key)
 
     def run(self) -> None:
-        """Main execution loop."""
         logger.info("Starting Bilibili video scan pipeline...")
         history = self.history_store.load()
         videos = self.bili_service.fetch_latest_videos(self.cfg.target_uid)
@@ -493,7 +446,6 @@ class VideoMonitorEngine:
             logger.warning("Empty video payload or failed to connect to Bilibili.")
             return
 
-        # 首次冷启动：自动测试最新一条记录并初始化历史
         if not history:
             logger.info("Initial run detected. Executing test pipeline on latest post...")
             latest = videos[0]
@@ -501,7 +453,6 @@ class VideoMonitorEngine:
             self.history_store.save([v.bvid for v in videos])
             return
 
-        # 日常扫描模式：按时间正序处理新投稿
         new_bvids = []
         for video in reversed(videos):
             if video.bvid not in history:
