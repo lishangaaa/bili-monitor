@@ -1,8 +1,6 @@
 name: Bilibili Monitor
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 # 限制同一时间只能运行一个监控实例，避免状态写入与提交冲突
