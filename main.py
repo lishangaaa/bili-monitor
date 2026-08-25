@@ -33,21 +33,98 @@ def get_tenant_access_token():
         print(f"飞书 Token 请求异常: {e}")
     return None
 
+def upload_image_to_feishu(pic_url, token):
+    """下载 B 站封面并上传到飞书，获取合规的 image_key"""
+    if not pic_url or not token:
+        return None
+
+    if pic_url.startswith("//"):
+        pic_url = f"https:{pic_url}"
+    elif pic_url.startswith("http://"):
+        pic_url = pic_url.replace("http://", "https://", 1)
+
+    try:
+        # 1. 突破防盗链下载图片
+        img_res = requests.get(pic_url, headers=COMMON_HEADERS, timeout=15)
+        if img_res.status_code != 200:
+            print(f"下载封面失败: 状态码 {img_res.status_code}")
+            return None
+
+        # 2. 上传到飞书开放平台
+        upload_url = "https://open.feishu.cn/open-apis/im/v1/images"
+        upload_headers = {"Authorization": f"Bearer {token}"}
+        data = {"image_type": "message"}
+        files = {"image": ("cover.jpg", img_res.content, "image/jpeg")}
+
+        resp = requests.post(upload_url, headers=upload_headers, data=data, files=files, timeout=20).json()
+        if resp.get("code") == 0 and "data" in resp:
+            image_key = resp["data"]["image_key"]
+            print(f"封面成功转存至飞书，Key: {image_key}")
+            return image_key
+        else:
+            print(f"上传封面至飞书失败: {resp}")
+    except Exception as e:
+        print(f"图片中转异常: {e}")
+    return None
+
 def send_feishu_card(title, author, reason, tags_str, desc, video_url, pic_url):
-    """发送飞书互动卡片"""
+    """发送带原生封面图的飞书卡片"""
     token = get_tenant_access_token()
     if not token or not RECEIVE_ID:
         print("缺少飞书 Token 或 RECEIVE_ID 配置")
         return
 
-    if pic_url.startswith("//"):
-        pic_url = f"https:{pic_url}"
+    # 上传封面获取 key
+    image_key = upload_image_to_feishu(pic_url, token)
 
     url = f"https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type={RECEIVE_ID_TYPE}"
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json; charset=utf-8"
     }
+
+    elements = [
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": (
+                    f"**📺 视频标题：** [{title}]({video_url})\n"
+                    f"**🎯 命中原因：** {reason}\n"
+                    f"**🏷️ 视频标签：** {tags_str}\n"
+                    f"**📝 视频简介：** {desc[:120]}..."
+                )
+            }
+        }
+    ]
+
+    # 如果封面上传成功，追加原生图片组件
+    if image_key:
+        elements.append({
+            "tag": "img",
+            "img_key": image_key,
+            "alt": {
+                "tag": "plain_text",
+                "content": "视频封面"
+            },
+            "mode": "fit_horizontal"
+        })
+
+    # 追加底部直达按钮
+    elements.append({
+        "tag": "action",
+        "actions": [
+            {
+                "tag": "button",
+                "text": {
+                    "tag": "plain_text",
+                    "content": "👉 点击在 B 站中播放"
+                },
+                "type": "primary",
+                "url": video_url
+            }
+        ]
+    })
 
     card_content = {
         "config": {"wide_screen_mode": True},
@@ -58,35 +135,7 @@ def send_feishu_card(title, author, reason, tags_str, desc, video_url, pic_url):
             },
             "template": "blue"
         },
-        "elements": [
-            {
-                "tag": "div",
-                "text": {
-                    "tag": "lark_md",
-                    "content": (
-                        f"**📺 视频标题：** [{title}]({video_url})\n"
-                        f"**🎯 命中原因：** {reason}\n"
-                        f"**🏷️ 视频标签：** {tags_str}\n"
-                        f"**📝 视频简介：** {desc[:120]}...\n\n"
-                        f"![封面]({pic_url})"
-                    )
-                }
-            },
-            {
-                "tag": "action",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {
-                            "tag": "plain_text",
-                            "content": "👉 点击直达 B 站播放"
-                        },
-                        "type": "primary",
-                        "url": video_url
-                    }
-                ]
-            }
-        ]
+        "elements": elements
     }
 
     payload = {
@@ -118,7 +167,6 @@ def get_latest_videos(mid):
                         "pic": item.get("cover", ""),
                         "author": item.get("upper", {}).get("name", "UP主")
                     })
-                print(f"成功获取到 {len(result)} 条投稿数据")
                 return result
         print(f"接口返回异常: {resp}")
     except Exception as e:
@@ -163,9 +211,9 @@ def main():
         print("未获取到视频列表，退出")
         return
 
-    # 首次运行 / 测试模式：直接拿最新第一条视频进行全流程真实测试
+    # 首次运行测试模式
     if not history_bvids:
-        print("检测到首次运行，正在对最新一条真实视频执行命中测试...")
+        print("检测到首次运行，正在对最新一条视频进行全流程图片推送测试...")
         test_video = vlist[0]
         bvid = test_video["bvid"]
         title = test_video["title"]
@@ -176,22 +224,19 @@ def main():
 
         tags = get_video_tags(bvid)
         tag_display = "、".join(tags) if tags else "无标签"
-        print(f"正在分析最新视频: {title}")
-        print(f"已提取标签: {tag_display}")
 
         is_matched, reason = match_rules(title, tags)
         if is_matched:
             send_feishu_card(title, author, reason, tag_display, desc, video_url, pic)
             print(f"测试推送成功: {reason}")
         else:
-            print(f"最新视频未命中【{TARGET_KEYWORD}】，跳过推送")
+            print(f"最新视频未命中【{TARGET_KEYWORD}】")
 
-        # 将当前已有的视频批量存入历史记录
         initial_bvids = [v["bvid"] for v in vlist if v.get("bvid")]
         save_history(initial_bvids)
         return
 
-    # 日常轮询模式：检查是否有未记录的新视频
+    # 日常监控模式
     new_found = False
     for video in reversed(vlist):
         bvid = video.get("bvid")
