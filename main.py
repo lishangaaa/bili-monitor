@@ -203,18 +203,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    def main():
-    # ---- 临时测试代码（收到通知后删掉此段）----
-    send_feishu_card(
-        title="【测试推送】洛天依监控配置成功",
-        author="测试UP主",
-        reason="手动连通性测试",
-        tags_str="洛天依、VOCALOID、测试",
-        desc="当你看到这条卡片消息时，说明飞书机器人、Secret 凭证和 GitHub Actions 的通信已完全打通！",
-        video_url="https://www.bilibili.com",
-        pic_url="https://i0.hdslb.com/bfs/archive/2237bb96a0b1297e59f42b322a36b56dc66324b1.jpg"
-    )
-    # ----------------------------------------
-
-    history_bvids = load_history()
-    vlist = get_latest_videos(UID)
