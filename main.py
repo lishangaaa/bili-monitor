@@ -22,7 +22,7 @@ COMMON_HEADERS = {
 }
 
 def get_tenant_access_token():
-    """获取飞书凭证"""
+    """获取飞书应用凭证"""
     url = "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal"
     try:
         resp = requests.post(url, json={"app_id": APP_ID, "app_secret": APP_SECRET}, timeout=10).json()
@@ -118,7 +118,7 @@ def get_latest_videos(mid):
                         "pic": item.get("cover", ""),
                         "author": item.get("upper", {}).get("name", "UP主")
                     })
-                print(f"成功获取到 {len(result)} 条最新视频！")
+                print(f"成功获取到 {len(result)} 条投稿数据")
                 return result
         print(f"接口返回异常: {resp}")
     except Exception as e:
@@ -157,32 +157,41 @@ def save_history(history_list):
         f.write("\n".join(cleaned_list))
 
 def main():
-    # =============== 测试推送区 ===============
-    print("正在发送飞书连通性测试卡片...")
-    send_feishu_card(
-        title="【测试推送】B站洛天依监控已就绪",
-        author="系统监控",
-        reason="手动触发连通性测试",
-        tags_str="洛天依、监控机器人、自动推送",
-        desc="飞书机器人通信正常！后续当目标 UP 主发布包含【洛天依】的新视频时，将自动在此推送卡片。",
-        video_url="https://www.bilibili.com",
-        pic_url="https://i0.hdslb.com/bfs/archive/2237bb96a0b1297e59f42b322a36b56dc66324b1.jpg"
-    )
-    # =========================================
-
     history_bvids = load_history()
     vlist = get_latest_videos(UID)
     if not vlist:
         print("未获取到视频列表，退出")
         return
 
-    # 首次运行：记录基础数据生成 last_bvid.txt
+    # 首次运行 / 测试模式：直接拿最新第一条视频进行全流程真实测试
     if not history_bvids:
+        print("检测到首次运行，正在对最新一条真实视频执行命中测试...")
+        test_video = vlist[0]
+        bvid = test_video["bvid"]
+        title = test_video["title"]
+        desc = test_video.get("description", "") or "暂无简介"
+        author = test_video.get("author", "目标UP主")
+        pic = test_video.get("pic", "")
+        video_url = f"https://www.bilibili.com/video/{bvid}"
+
+        tags = get_video_tags(bvid)
+        tag_display = "、".join(tags) if tags else "无标签"
+        print(f"正在分析最新视频: {title}")
+        print(f"已提取标签: {tag_display}")
+
+        is_matched, reason = match_rules(title, tags)
+        if is_matched:
+            send_feishu_card(title, author, reason, tag_display, desc, video_url, pic)
+            print(f"测试推送成功: {reason}")
+        else:
+            print(f"最新视频未命中【{TARGET_KEYWORD}】，跳过推送")
+
+        # 将当前已有的视频批量存入历史记录
         initial_bvids = [v["bvid"] for v in vlist if v.get("bvid")]
         save_history(initial_bvids)
-        print(f"首次初始化成功！已记录基准视频: {initial_bvids}")
         return
 
+    # 日常轮询模式：检查是否有未记录的新视频
     new_found = False
     for video in reversed(vlist):
         bvid = video.get("bvid")
