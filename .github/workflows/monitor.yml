@@ -38,6 +38,15 @@ jobs:
           # TARGET_KEYWORD: ${{ vars.TARGET_KEYWORD }}
         run: python main.py
 
+- name: Run Monitor Script
+        env:
+          TZ: Asia/Shanghai  # 将系统与 Python 运行时时区设为北京时间
+          FEISHU_APP_ID: ${{ secrets.FEISHU_APP_ID }}
+          FEISHU_APP_SECRET: ${{ secrets.FEISHU_APP_SECRET }}
+          FEISHU_RECEIVE_ID: ${{ secrets.FEISHU_RECEIVE_ID }}
+          FEISHU_RECEIVE_ID_TYPE: ${{ secrets.FEISHU_RECEIVE_ID_TYPE }}
+        run: python main.py
+
       - name: Commit State
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
